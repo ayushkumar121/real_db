@@ -152,7 +152,7 @@ fn execute_program(program: Program) -> Result<Records, String> {
                 for (record_id, record) in &records {
                     let mut include = false;
                     for field in &record.fields {
-                        if field.key == key && predicate(&field.value, &value) {
+                        if field.key == key && predicate(&value, &field.value) {
                             include = true;
                             break;
                         }
