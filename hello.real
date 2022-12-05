@@ -1,11 +1,9 @@
 1 "Name" "Ayush Kumar" SET
 1 "Age" 22             SET
 
-"Name" "Mukul"         INSERT
+"Name" "Mukul"         INSERT SELECT
 
-# SELECT_ALL # This selects all
-
-"Name" "Mukul" "==" FILTER
+# "Name" "Mukul" "==" FILTER
 
 # 1 SELECT This is a comment
 # 2 SELECT This is a comment

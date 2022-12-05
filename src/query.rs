@@ -15,6 +15,7 @@ pub enum TokenKind {
     Select,
     SelectAll,
     Filter,
+    Drop,
     Auto,
     Int,
     Float,
@@ -31,6 +32,7 @@ fn match_token_kind(word: &str) -> TokenKind {
         "select" => TokenKind::Select,
         "select_all" => TokenKind::SelectAll,
         "filter" => TokenKind::Filter,
+        "drop" => TokenKind::Drop,
         _ => {
             if word.starts_with('\"') && word.ends_with('\"') {
                 return TokenKind::String;
@@ -106,7 +108,7 @@ fn tokenize(contents: String) -> Result<Vec<Token>, String> {
 
 pub type Id = u64;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, PartialOrd)]
 pub enum Value {
     Id(Id),
     Int(i64),
@@ -121,6 +123,7 @@ pub enum Operation {
     SelectAll,
     Filter,
     Insert,
+    Drop,
 }
 
 pub type Program = Vec<Operation>;
@@ -154,6 +157,7 @@ pub fn parse_program(contents: String) -> Result<Program, String> {
             TokenKind::SelectAll => program.push(Operation::SelectAll),
             TokenKind::Filter => program.push(Operation::Filter),
             TokenKind::Insert => program.push(Operation::Insert),
+            TokenKind::Drop => program.push(Operation::Drop),
             _ => {
                 return Err(format!(
                     "unknown word `{}` at line {}:{}",

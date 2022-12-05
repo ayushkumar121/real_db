@@ -19,6 +19,30 @@ struct Record {
 
 type Records = HashMap<Id, Rc<Record>>;
 
+fn assert_stack_len(stack: &Vec<Value>, n: usize) -> Result<(), String> {
+    if stack.len() < n {
+        return Err(format!(
+            "Stack must have atleast {} value(s), current stack is {:#?}",
+            n, stack
+        )
+        .to_owned());
+    }
+    Ok(())
+}
+
+fn match_filter_predicate(predicate: Value) -> Option<fn(&Value, &Value) -> bool> {
+    match predicate {
+        Value::String(predicate) => match predicate.as_str() {
+            "==" => Some(|a, b| a == b),
+            "<" => Some(|a, b| a < b),
+            "<=" => Some(|a, b| a <= b),
+            ">" => Some(|a, b| a > b),
+            ">=" => Some(|a, b| a >= b),
+            _ => None,
+        },
+        _ => None,
+    }
+}
 fn execute_program(program: Program) -> Result<Records, String> {
     let mut stack = Vec::new();
     let mut records: Records = HashMap::new();
@@ -31,13 +55,10 @@ fn execute_program(program: Program) -> Result<Records, String> {
                 stack.push(value);
             }
             Operation::Set => {
-                // stack must contain 3 values
+                // stack must contain values
                 // Id, Key, Value
-                if stack.len() < 3 {
-                    return Err(
-                        "Stack must have atleast 3 values, current stack is {:#?}".to_owned()
-                    );
-                }
+                assert_stack_len(&stack, 3)?;
+
                 let value = stack.pop().unwrap();
                 let key = match stack.pop().unwrap() {
                     Value::String(str) => str,
@@ -63,13 +84,10 @@ fn execute_program(program: Program) -> Result<Records, String> {
                 }
             }
             Operation::Insert => {
-                // stack must contain 3 values
+                // stack must contain values
                 //  Key, Value
-                if stack.len() < 2 {
-                    return Err(
-                        "Stack must have atleast 2 values, current stack is {:#?}".to_owned()
-                    );
-                }
+                assert_stack_len(&stack, 2)?;
+
                 let value = stack.pop().unwrap();
                 let key = match stack.pop().unwrap() {
                     Value::String(str) => str,
@@ -89,15 +107,14 @@ fn execute_program(program: Program) -> Result<Records, String> {
                         }),
                     );
                 }
+
+                // Pushing inserted Id on the stack
+                stack.push(Value::Id(record_id));
             }
             Operation::Select => {
-                // stack must contain 1 values
+                // stack must contain values
                 // Id
-                if stack.len() < 1 {
-                    return Err(
-                        "Stack must have atleast 1 values, current stack is {:#?}".to_owned()
-                    );
-                }
+                assert_stack_len(&stack, 1)?;
 
                 let record_id = match stack.pop().unwrap() {
                     Value::Id(id) => id,
@@ -117,20 +134,13 @@ fn execute_program(program: Program) -> Result<Records, String> {
                 }
             }
             Operation::Filter => {
-                // stack must contain 3 values
+                // stack must contain values
                 // Key, Value, Predicate
-                if stack.len() < 3 {
-                    return Err(
-                        "Stack must have atleast 3 values, current stack is {:#?}".to_owned()
-                    );
-                }
+                assert_stack_len(&stack, 3)?;
 
-                let _predicate = match stack.pop().unwrap() {
-                    Value::String(predicate) => match predicate.as_str() {
-                        "==" => predicate,
-                        _ => return Err(format!("Unknown predicated `{}`", predicate).to_owned()),
-                    },
-                    _ => return Err("Record Id must be an id".to_owned()),
+                let predicate = match match_filter_predicate(stack.pop().unwrap()) {
+                    Some(predicate) => predicate,
+                    _ => return Err("Predicate unknown".to_owned()),
                 };
                 let value = stack.pop().unwrap();
                 let key = match stack.pop().unwrap() {
@@ -138,10 +148,11 @@ fn execute_program(program: Program) -> Result<Records, String> {
                     _ => return Err("Key must be a string".to_owned()),
                 };
 
+                // TODO: optimize this with indexes
                 for (record_id, record) in &records {
                     let mut include = false;
                     for field in &record.fields {
-                        if field.key == key && field.value == value {
+                        if field.key == key && predicate(&field.value, &value) {
                             include = true;
                             break;
                         }
@@ -151,6 +162,13 @@ fn execute_program(program: Program) -> Result<Records, String> {
                         result.insert(*record_id, record.clone());
                     }
                 }
+            }
+            Operation::Drop => {
+                // stack must contain values
+                // Any
+                assert_stack_len(&stack, 1)?;
+
+                stack.pop();
             }
         }
     }
