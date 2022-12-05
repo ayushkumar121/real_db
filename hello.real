@@ -1,0 +1,7 @@
+1 "Name" "Ayush Kumar" SET
+1 "Age" 22             SET
+
+2 "Name" "Mukul"       SET
+2 "Age"  24            SET 
+
+1 SELECT 2 SELECT
