@@ -173,7 +173,7 @@ fn execute_program(program: &mut Program) -> Result<Records, String> {
                 for (record_id, record) in &records {
                     let mut include = false;
                     for field in &record.fields {
-                        if field.key == key && predicate(&value, &field.value) {
+                        if field.key == key && predicate(&field.value, &value) {
                             include = true;
                             break;
                         }
@@ -218,17 +218,15 @@ fn execute_program(program: &mut Program) -> Result<Records, String> {
     Ok(result)
 }
 
-pub fn run() -> Result<(), String> {
-    let contents = fs::read_to_string("hello.real").unwrap();
-    let mut program = query::parse_program(contents)?;
-    let result = execute_program(&mut program)?;
-
-    for (record_id, record) in &result {
+fn print_records(records: &Records) {
+    for (record_id, record) in records {
         println!("________________________");
         println!("{0: <10} | {1: <10}", "Id", record_id);
         for field in &record.fields {
             match field.value.clone() {
-                Value::Id(_) => {}
+                Value::Id(val) => {
+                    println!("{0: <10} | {1: <10?}", field.key, val);
+                }
                 Value::Int(val) => {
                     println!("{0: <10} | {1: <10?}", field.key, val);
                 }
@@ -242,6 +240,14 @@ pub fn run() -> Result<(), String> {
         }
         println!("________________________");
     }
+}
+
+pub fn run() -> Result<(), String> {
+    let contents = fs::read_to_string("hello.real").unwrap();
+    let mut program = query::parse_program(contents)?;
+    let records = execute_program(&mut program)?;
+
+    print_records(&records);
 
     Ok(())
 }

@@ -1,9 +1,6 @@
 RANGE 10 DO
     it "Name" "Ayush Kumar" SET
-    it "Age" _ SET
+    it "Age" 10 SET
 END
 
-"Age" "20" ">" FILTER
-
-# 1 SELECT This is a comment
-# 2 SELECT This is a comment
+"Age" 5 ">" FILTER
