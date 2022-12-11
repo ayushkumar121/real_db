@@ -5,6 +5,8 @@ use std::fs;
 use std::rc::Rc;
 
 mod query;
+#[cfg(test)]
+mod tests;
 
 #[derive(Debug)]
 struct Field {
@@ -43,16 +45,29 @@ fn match_filter_predicate(predicate: Value) -> Option<fn(&Value, &Value) -> bool
         _ => None,
     }
 }
-fn execute_program(program: Program) -> Result<Records, String> {
+
+fn execute_program(program: &mut Program) -> Result<Records, String> {
     let mut stack = Vec::new();
     let mut records: Records = HashMap::new();
     let mut result: Records = HashMap::new();
     let mut rng = random::default(42);
+    let mut i = 0;
 
-    for op in program {
+    let mut it = 0;
+
+    while i < program.len() {
+        let op = &program[i];
+
         match op {
+            Operation::Start => {
+                i = i + 1;
+            }
+            Operation::End => {
+                i = i + 1;
+            }
             Operation::Push(value) => {
-                stack.push(value);
+                stack.push(value.clone());
+                i = i + 1;
             }
             Operation::Set => {
                 // stack must contain values
@@ -67,7 +82,9 @@ fn execute_program(program: Program) -> Result<Records, String> {
                 let record_id = match stack.pop().unwrap() {
                     Value::Id(id) => id,
                     Value::Int(num) => num as Id,
-                    _ => return Err("Record Id must be an id".to_owned()),
+                    val => {
+                        return Err(format!("Record Id must be an id found {:#?}", val).to_owned())
+                    }
                 };
                 let new_field = Field { key, value };
 
@@ -82,6 +99,7 @@ fn execute_program(program: Program) -> Result<Records, String> {
                         }),
                     );
                 }
+                i = i + 1;
             }
             Operation::Insert => {
                 // stack must contain values
@@ -110,6 +128,7 @@ fn execute_program(program: Program) -> Result<Records, String> {
 
                 // Pushing inserted Id on the stack
                 stack.push(Value::Id(record_id));
+                i = i + 1;
             }
             Operation::Select => {
                 // stack must contain values
@@ -127,11 +146,13 @@ fn execute_program(program: Program) -> Result<Records, String> {
                 } else {
                     return Err("Record not found".to_owned());
                 }
+                i = i + 1;
             }
             Operation::SelectAll => {
                 for (record_id, record) in &records {
                     result.insert(*record_id, record.clone());
                 }
+                i = i + 1;
             }
             Operation::Filter => {
                 // stack must contain values
@@ -162,6 +183,7 @@ fn execute_program(program: Program) -> Result<Records, String> {
                         result.insert(*record_id, record.clone());
                     }
                 }
+                i = i + 1;
             }
             Operation::Drop => {
                 // stack must contain values
@@ -169,6 +191,26 @@ fn execute_program(program: Program) -> Result<Records, String> {
                 assert_stack_len(&stack, 1)?;
 
                 stack.pop();
+                i = i + 1;
+            }
+            Operation::It => {
+                stack.push(Value::Int(it));
+                i = i + 1;
+            }
+            Operation::Range { value, end } => {
+                if *value > 0 {
+                    it = *value;
+                    program[i] = Operation::Range {
+                        value: value - 1,
+                        end: *end,
+                    };
+                    i = i + 1;
+                } else {
+                    i = *end;
+                }
+            }
+            Operation::Jump(pos) => {
+                i = *pos;
             }
         }
     }
@@ -178,16 +220,27 @@ fn execute_program(program: Program) -> Result<Records, String> {
 
 pub fn run() -> Result<(), String> {
     let contents = fs::read_to_string("hello.real").unwrap();
-    let program = query::parse_program(contents)?;
-    let result = execute_program(program)?;
+    let mut program = query::parse_program(contents)?;
+    let result = execute_program(&mut program)?;
 
     for (record_id, record) in &result {
-        println!("**********************");
-        println!("Id={:#?}", record_id);
+        println!("________________________");
+        println!("{0: <10} | {1: <10}", "Id", record_id);
         for field in &record.fields {
-            println!("{}={:#?}", field.key, field.value);
+            match field.value.clone() {
+                Value::Id(_) => {}
+                Value::Int(val) => {
+                    println!("{0: <10} | {1: <10?}", field.key, val);
+                }
+                Value::Float(val) => {
+                    println!("{0: <10} | {1: <10?}", field.key, val);
+                }
+                Value::String(val) => {
+                    println!("{0: <10} | {1: <10?}", field.key, val);
+                }
+            }
         }
-        println!("**********************");
+        println!("________________________");
     }
 
     Ok(())

@@ -8,7 +8,7 @@ pub struct Token {
     col: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum TokenKind {
     Set,
     Insert,
@@ -21,6 +21,10 @@ pub enum TokenKind {
     Float,
     String,
     Word,
+    Range,
+    It,
+    Do,
+    End,
 }
 
 fn match_token_kind(word: &str) -> TokenKind {
@@ -33,6 +37,10 @@ fn match_token_kind(word: &str) -> TokenKind {
         "select_all" => TokenKind::SelectAll,
         "filter" => TokenKind::Filter,
         "drop" => TokenKind::Drop,
+        "range" => TokenKind::Range,
+        "it" => TokenKind::It,
+        "do" => TokenKind::Do,
+        "end" => TokenKind::End,
         _ => {
             if word.starts_with('\"') && word.ends_with('\"') {
                 return TokenKind::String;
@@ -108,7 +116,7 @@ fn tokenize(contents: String) -> Result<Vec<Token>, String> {
 
 pub type Id = u64;
 
-#[derive(Debug, PartialEq, PartialOrd)]
+#[derive(Debug, PartialEq, PartialOrd, Clone)]
 pub enum Value {
     Id(Id),
     Int(i64),
@@ -117,6 +125,7 @@ pub enum Value {
 }
 
 pub enum Operation {
+    Start,
     Push(Value),
     Set,
     Select,
@@ -124,6 +133,13 @@ pub enum Operation {
     Filter,
     Insert,
     Drop,
+    It,
+    // Starts a range scope
+    // Decide weather to jump to end or fallthrough
+    Range { value: i64, end: usize },
+    // Jumps back to start of the scope
+    Jump(usize),
+    End,
 }
 
 pub type Program = Vec<Operation>;
@@ -131,10 +147,14 @@ pub type Program = Vec<Operation>;
 pub fn parse_program(contents: String) -> Result<Program, String> {
     let tokens = tokenize(contents)?;
 
-    let mut program = Vec::new();
+    let mut program = vec![Operation::Start];
+    let mut scopes = Vec::new();
     let mut rng = random::default(42);
 
-    for token in tokens {
+    let mut i = 0;
+    while i < tokens.len() {
+        let token = &tokens[i];
+
         match token.kind {
             TokenKind::String => {
                 let mut w = token.word.strip_prefix('\"').unwrap();
@@ -158,15 +178,62 @@ pub fn parse_program(contents: String) -> Result<Program, String> {
             TokenKind::Filter => program.push(Operation::Filter),
             TokenKind::Insert => program.push(Operation::Insert),
             TokenKind::Drop => program.push(Operation::Drop),
-            _ => {
+            TokenKind::Range => {
+                i = i + 1;
+                let next_token = &tokens[i];
+                if next_token.kind != TokenKind::Int {
+                    return Err(format!(
+                        "Expected int at not {} line {}:{}",
+                        next_token.word, next_token.line, next_token.col
+                    )
+                    .to_owned());
+                }
+                let value: i64 = next_token.word.parse().unwrap();
+
+                scopes.push(program.len());
+                program.push(Operation::Range { value, end: 0 });
+            }
+            TokenKind::It => {
+                if let Some(_) = scopes.last() {
+                    program.push(Operation::It);
+                } else {
+                    return Err(format!(
+                        "Unexpected end without matching do line {}:{}",
+                        token.line, token.col
+                    )
+                    .to_owned());
+                }
+            }
+            TokenKind::Do => {}
+            TokenKind::End => {
+                if let Some(pos) = scopes.pop() {
+                    let end = program.len() + 1;
+                    program[pos] = match program[pos] {
+                        Operation::Range { value, .. } => Operation::Range { value, end },
+                        _ => todo!(),
+                    };
+
+                    program.push(Operation::Jump(pos));
+                } else {
+                    return Err(format!(
+                        "Unexpected end without matching do line {}:{}",
+                        token.line, token.col
+                    )
+                    .to_owned());
+                }
+            }
+            TokenKind::Word => {
                 return Err(format!(
-                    "unknown word `{}` at line {}:{}",
+                    "Unexpected word {} line {}:{}",
                     token.word, token.line, token.col
                 )
-                .to_owned())
+                .to_owned());
             }
         }
+
+        i = i + 1;
     }
+    program.push(Operation::End);
 
     Ok(program)
 }

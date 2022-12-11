@@ -1,9 +1,7 @@
-1 "Name" "Ayush Kumar" SET
-1 "Age" 22             SET
-
-"Name" "Mukul"         INSERT 
-
-# SELECT
+RANGE 10 DO
+    it "Name" "Ayush Kumar" SET
+    it "Age" _ SET
+END
 
 "Age" "20" ">" FILTER
 
