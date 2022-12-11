@@ -10,6 +10,8 @@ pub struct Token {
 
 #[derive(Debug, PartialEq)]
 pub enum TokenKind {
+    Plus,
+    Minus,
     Set,
     Insert,
     Select,
@@ -30,6 +32,8 @@ pub enum TokenKind {
 fn match_token_kind(word: &str) -> TokenKind {
     let word = word.to_lowercase();
     match word.as_str() {
+        "+" => TokenKind::Plus,
+        "-" => TokenKind::Minus,
         "_" => TokenKind::Auto,
         "set" => TokenKind::Set,
         "insert" => TokenKind::Insert,
@@ -125,21 +129,25 @@ pub enum Value {
 }
 
 pub enum Operation {
+    // Start and end labels for query
     Start,
+    End,
     Push(Value),
+    // Instricts
     Set,
     Select,
     SelectAll,
     Filter,
     Insert,
     Drop,
+    Add,
+    Subtract,
     It,
     // Starts a range scope
     // Decide weather to jump to end or fallthrough
     Range { value: i64, end: usize },
     // Jumps back to start of the scope
     Jump(usize),
-    End,
 }
 
 pub type Program = Vec<Operation>;
@@ -178,6 +186,8 @@ pub fn parse_program(contents: String) -> Result<Program, String> {
             TokenKind::Filter => program.push(Operation::Filter),
             TokenKind::Insert => program.push(Operation::Insert),
             TokenKind::Drop => program.push(Operation::Drop),
+            TokenKind::Plus => program.push(Operation::Add),
+            TokenKind::Minus => program.push(Operation::Subtract),
             TokenKind::Range => {
                 i = i + 1;
                 let next_token = &tokens[i];

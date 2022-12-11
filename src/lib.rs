@@ -9,14 +9,8 @@ mod query;
 mod tests;
 
 #[derive(Debug)]
-struct Field {
-    key: String,
-    value: Value,
-}
-
-#[derive(Debug)]
 struct Record {
-    fields: Vec<Field>,
+    fields: HashMap<String, Value>,
 }
 
 type Records = HashMap<Id, Rc<Record>>;
@@ -43,6 +37,20 @@ fn match_filter_predicate(predicate: Value) -> Option<fn(&Value, &Value) -> bool
             _ => None,
         },
         _ => None,
+    }
+}
+
+fn intrinsic_set(records: &mut Records, id: Id, key: String, value: Value) {
+    if let Some(record) = records.get_mut(&id) {
+        let record = Rc::get_mut(record).unwrap();
+        record.fields.insert(key, value);
+    } else {
+        records.insert(
+            id,
+            Rc::new(Record {
+                fields: HashMap::from([(String::from("Id"), Value::Id(id)), (key, value)]),
+            }),
+        );
     }
 }
 
@@ -86,19 +94,8 @@ fn execute_program(program: &mut Program) -> Result<Records, String> {
                         return Err(format!("Record Id must be an id found {:#?}", val).to_owned())
                     }
                 };
-                let new_field = Field { key, value };
 
-                if let Some(record) = records.get_mut(&record_id) {
-                    let record = Rc::get_mut(record).unwrap();
-                    record.fields.push(new_field);
-                } else {
-                    records.insert(
-                        record_id,
-                        Rc::new(Record {
-                            fields: vec![new_field],
-                        }),
-                    );
-                }
+                intrinsic_set(&mut records, record_id, key, value);
                 i = i + 1;
             }
             Operation::Insert => {
@@ -111,20 +108,9 @@ fn execute_program(program: &mut Program) -> Result<Records, String> {
                     Value::String(str) => str,
                     _ => return Err("Key must be a string".to_owned()),
                 };
-                let new_field = Field { key, value };
                 let record_id: Id = rng.read_u64();
 
-                if let Some(record) = records.get_mut(&record_id) {
-                    let record = Rc::get_mut(record).unwrap();
-                    record.fields.push(new_field);
-                } else {
-                    records.insert(
-                        record_id,
-                        Rc::new(Record {
-                            fields: vec![new_field],
-                        }),
-                    );
-                }
+                intrinsic_set(&mut records, record_id, key, value);
 
                 // Pushing inserted Id on the stack
                 stack.push(Value::Id(record_id));
@@ -172,8 +158,8 @@ fn execute_program(program: &mut Program) -> Result<Records, String> {
                 // TODO: optimize this with indexes
                 for (record_id, record) in &records {
                     let mut include = false;
-                    for field in &record.fields {
-                        if field.key == key && predicate(&field.value, &value) {
+                    for (field_key, field_value) in &record.fields {
+                        if field_key.eq(&key) && predicate(&field_value, &value) {
                             include = true;
                             break;
                         }
@@ -191,6 +177,46 @@ fn execute_program(program: &mut Program) -> Result<Records, String> {
                 assert_stack_len(&stack, 1)?;
 
                 stack.pop();
+                i = i + 1;
+            }
+            Operation::Add => {
+                // stack must contain values
+                // a:Int b:Int
+                assert_stack_len(&stack, 2)?;
+
+                let b = match stack.pop().unwrap() {
+                    Value::Id(val) => val as i64,
+                    Value::Int(val) => val,
+                    _ => return Err("Add requires two int on stack".to_owned()),
+                };
+
+                let a = match stack.pop().unwrap() {
+                    Value::Id(val) => val as i64,
+                    Value::Int(val) => val,
+                    _ => return Err("Add requires two int on stack".to_owned()),
+                };
+
+                stack.push(Value::Int(a + b));
+                i = i + 1;
+            }
+            Operation::Subtract => {
+                // stack must contain values
+                // a:Int b:Int
+                assert_stack_len(&stack, 2)?;
+
+                let b = match stack.pop().unwrap() {
+                    Value::Id(val) => val as i64,
+                    Value::Int(val) => val,
+                    _ => return Err("Add requires two int on stack".to_owned()),
+                };
+
+                let a = match stack.pop().unwrap() {
+                    Value::Id(val) => val as i64,
+                    Value::Int(val) => val,
+                    _ => return Err("Add requires two int on stack".to_owned()),
+                };
+
+                stack.push(Value::Int(a - b));
                 i = i + 1;
             }
             Operation::It => {
@@ -219,26 +245,31 @@ fn execute_program(program: &mut Program) -> Result<Records, String> {
 }
 
 fn print_records(records: &Records) {
-    for (record_id, record) in records {
-        println!("________________________");
-        println!("{0: <10} | {1: <10}", "Id", record_id);
-        for field in &record.fields {
-            match field.value.clone() {
+    println!("┌────────────┬──────────────────────┐");
+    let mut row = 0;
+    for (_, record) in records {
+        for (key, value) in &record.fields {
+            match value {
                 Value::Id(val) => {
-                    println!("{0: <10} | {1: <10?}", field.key, val);
+                    println!("│ {0: <10} │ {1: >20} │", key, val);
                 }
                 Value::Int(val) => {
-                    println!("{0: <10} | {1: <10?}", field.key, val);
+                    println!("│ {0: <10} │ {1: >20} │", key, val);
                 }
                 Value::Float(val) => {
-                    println!("{0: <10} | {1: <10?}", field.key, val);
+                    println!("│ {0: <10} │ {1: >20} │", key, val);
                 }
                 Value::String(val) => {
-                    println!("{0: <10} | {1: <10?}", field.key, val);
+                    println!("│ {0: <10} │ {1: >20} │", key, val);
                 }
             }
         }
-        println!("________________________");
+        if row == records.len() - 1 {
+            println!("└────────────┴──────────────────────┘");
+        } else {
+            println!("├────────────┼──────────────────────┤");
+        }
+        row = row + 1;
     }
 }
 
