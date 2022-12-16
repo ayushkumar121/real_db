@@ -1,4 +1,12 @@
+use std::{
+    io::{BufRead, BufReader, Read},
+    net::TcpStream,
+    time::{SystemTime, UNIX_EPOCH},
+};
+
 use random::Source;
+
+use crate::{Id, Value};
 
 #[derive(Debug)]
 pub struct Token {
@@ -8,7 +16,7 @@ pub struct Token {
     col: usize,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 pub enum TokenKind {
     Plus,
     Minus,
@@ -118,16 +126,6 @@ fn tokenize(contents: String) -> Result<Vec<Token>, String> {
     Ok(tokens)
 }
 
-pub type Id = u64;
-
-#[derive(Debug, PartialEq, PartialOrd, Clone)]
-pub enum Value {
-    Id(Id),
-    Int(i64),
-    Float(f64),
-    String(String),
-}
-
 pub enum Operation {
     // Start and end labels for query
     Start,
@@ -152,12 +150,15 @@ pub enum Operation {
 
 pub type Program = Vec<Operation>;
 
-pub fn parse_program(contents: String) -> Result<Program, String> {
+pub fn parse(contents: String) -> Result<Program, String> {
     let tokens = tokenize(contents)?;
 
     let mut program = vec![Operation::Start];
     let mut scopes = Vec::new();
-    let mut rng = random::default(42);
+
+    let start = SystemTime::now();
+    let since_the_epoch = start.duration_since(UNIX_EPOCH).unwrap();
+    let mut rng = random::default(since_the_epoch.as_secs());
 
     let mut i = 0;
     while i < tokens.len() {
@@ -189,14 +190,13 @@ pub fn parse_program(contents: String) -> Result<Program, String> {
             TokenKind::Plus => program.push(Operation::Add),
             TokenKind::Minus => program.push(Operation::Subtract),
             TokenKind::Range => {
-                i = i + 1;
+                i += 1;
                 let next_token = &tokens[i];
                 if next_token.kind != TokenKind::Int {
                     return Err(format!(
                         "Expected int at not {} line {}:{}",
                         next_token.word, next_token.line, next_token.col
-                    )
-                    .to_owned());
+                    ));
                 }
                 let value: i64 = next_token.word.parse().unwrap();
 
@@ -204,14 +204,13 @@ pub fn parse_program(contents: String) -> Result<Program, String> {
                 program.push(Operation::Range { value, end: 0 });
             }
             TokenKind::It => {
-                if let Some(_) = scopes.last() {
+                if scopes.last().is_some() {
                     program.push(Operation::It);
                 } else {
                     return Err(format!(
                         "Unexpected end without matching do line {}:{}",
                         token.line, token.col
-                    )
-                    .to_owned());
+                    ));
                 }
             }
             TokenKind::Do => {}
@@ -228,22 +227,46 @@ pub fn parse_program(contents: String) -> Result<Program, String> {
                     return Err(format!(
                         "Unexpected end without matching do line {}:{}",
                         token.line, token.col
-                    )
-                    .to_owned());
+                    ));
                 }
             }
             TokenKind::Word => {
                 return Err(format!(
-                    "Unexpected word {} line {}:{}",
+                    "Unexpected word `{}` line {}:{}",
                     token.word, token.line, token.col
-                )
-                .to_owned());
+                ));
             }
         }
 
-        i = i + 1;
+        i += 1;
     }
     program.push(Operation::End);
 
     Ok(program)
+}
+
+pub fn parse_tcp(mut buf_reader: BufReader<&mut TcpStream>) -> Result<Program, String> {
+    // Reading Headers
+    let mut request_line = String::new();
+    buf_reader.read_line(&mut request_line).unwrap();
+
+    loop {
+        let mut header_line = String::new();
+        buf_reader.read_line(&mut header_line).unwrap();
+
+        if header_line.trim() == "" {
+            break;
+        }
+    }
+
+    // Reading body
+    // We expect a new line to be present at
+    // end of the body
+
+    let mut body = String::new();
+    buf_reader.take(512).read_line(&mut body).unwrap();
+
+    println!("Executing query: {}", body.trim());
+
+    parse(body)
 }

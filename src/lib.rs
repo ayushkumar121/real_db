@@ -1,65 +1,62 @@
 use query::*;
 use random::Source;
-use std::collections::HashMap;
-use std::fs;
-use std::rc::Rc;
+use std::io::Write;
+use std::net::{TcpListener, TcpStream};
+use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
+use std::{collections::HashMap, io::BufReader};
 
+use crate::server::ThreadPool;
+
+mod intrinsics;
 mod query;
+mod server;
+
 #[cfg(test)]
 mod tests;
 
 #[derive(Debug)]
-struct Record {
+pub struct Record {
     fields: HashMap<String, Value>,
 }
 
-type Records = HashMap<Id, Rc<Record>>;
+pub type Id = u64;
+
+#[derive(Debug, PartialEq, PartialOrd, Clone)]
+pub enum Value {
+    Id(Id),
+    Int(i64),
+    Float(f64),
+    String(String),
+}
+
+type Records = HashMap<Id, Record>;
+type QueryResult = Vec<Id>;
 
 fn assert_stack_len(stack: &Vec<Value>, n: usize) -> Result<(), String> {
     if stack.len() < n {
         return Err(format!(
             "Stack must have atleast {} value(s), current stack is {:#?}",
             n, stack
-        )
-        .to_owned());
+        ));
     }
     Ok(())
 }
 
-fn match_filter_predicate(predicate: Value) -> Option<fn(&Value, &Value) -> bool> {
-    match predicate {
-        Value::String(predicate) => match predicate.as_str() {
-            "==" => Some(|a, b| a == b),
-            "<" => Some(|a, b| a < b),
-            "<=" => Some(|a, b| a <= b),
-            ">" => Some(|a, b| a > b),
-            ">=" => Some(|a, b| a >= b),
-            _ => None,
-        },
-        _ => None,
-    }
-}
+// Query Execution
+fn execute_program(
+    records: Arc<Mutex<Records>>,
+    mut program: Program,
+) -> Result<QueryResult, String> {
+    let records = &mut records.lock().unwrap();
 
-fn intrinsic_set(records: &mut Records, id: Id, key: String, value: Value) {
-    if let Some(record) = records.get_mut(&id) {
-        let record = Rc::get_mut(record).unwrap();
-        record.fields.insert(key, value);
-    } else {
-        records.insert(
-            id,
-            Rc::new(Record {
-                fields: HashMap::from([(String::from("Id"), Value::Id(id)), (key, value)]),
-            }),
-        );
-    }
-}
-
-fn execute_program(program: &mut Program) -> Result<Records, String> {
     let mut stack = Vec::new();
-    let mut records: Records = HashMap::new();
-    let mut result: Records = HashMap::new();
-    let mut rng = random::default(42);
+    let mut result = Vec::new();
     let mut i = 0;
+
+    let start = SystemTime::now();
+    let since_the_epoch = start.duration_since(UNIX_EPOCH).unwrap();
+    let mut rng = random::default(since_the_epoch.as_secs());
 
     let mut it = 0;
 
@@ -68,14 +65,14 @@ fn execute_program(program: &mut Program) -> Result<Records, String> {
 
         match op {
             Operation::Start => {
-                i = i + 1;
+                i += 1;
             }
             Operation::End => {
-                i = i + 1;
+                i += 1;
             }
             Operation::Push(value) => {
                 stack.push(value.clone());
-                i = i + 1;
+                i += 1;
             }
             Operation::Set => {
                 // stack must contain values
@@ -90,13 +87,11 @@ fn execute_program(program: &mut Program) -> Result<Records, String> {
                 let record_id = match stack.pop().unwrap() {
                     Value::Id(id) => id,
                     Value::Int(num) => num as Id,
-                    val => {
-                        return Err(format!("Record Id must be an id found {:#?}", val).to_owned())
-                    }
+                    val => return Err(format!("Record Id must be an id found {:#?}", val)),
                 };
 
-                intrinsic_set(&mut records, record_id, key, value);
-                i = i + 1;
+                intrinsics::set(records, record_id, key, value);
+                i += 1;
             }
             Operation::Insert => {
                 // stack must contain values
@@ -110,11 +105,11 @@ fn execute_program(program: &mut Program) -> Result<Records, String> {
                 };
                 let record_id: Id = rng.read_u64();
 
-                intrinsic_set(&mut records, record_id, key, value);
+                intrinsics::set(records, record_id, key, value);
 
                 // Pushing inserted Id on the stack
                 stack.push(Value::Id(record_id));
-                i = i + 1;
+                i += 1;
             }
             Operation::Select => {
                 // stack must contain values
@@ -127,25 +122,25 @@ fn execute_program(program: &mut Program) -> Result<Records, String> {
                     _ => return Err("Record Id must be an id".to_owned()),
                 };
 
-                if let Some(record) = records.get(&record_id) {
-                    result.insert(record_id, record.clone());
+                if records.get(&record_id).is_some() {
+                    result.push(record_id);
                 } else {
                     return Err("Record not found".to_owned());
                 }
-                i = i + 1;
+                i += 1;
             }
             Operation::SelectAll => {
-                for (record_id, record) in &records {
-                    result.insert(*record_id, record.clone());
+                for (record_id, _) in records.iter_mut() {
+                    result.push(*record_id);
                 }
-                i = i + 1;
+                i += 1;
             }
             Operation::Filter => {
                 // stack must contain values
                 // Key, Value, Predicate
                 assert_stack_len(&stack, 3)?;
 
-                let predicate = match match_filter_predicate(stack.pop().unwrap()) {
+                let predicate = match intrinsics::match_predicate(stack.pop().unwrap()) {
                     Some(predicate) => predicate,
                     _ => return Err("Predicate unknown".to_owned()),
                 };
@@ -155,21 +150,8 @@ fn execute_program(program: &mut Program) -> Result<Records, String> {
                     _ => return Err("Key must be a string".to_owned()),
                 };
 
-                // TODO: optimize this with indexes
-                for (record_id, record) in &records {
-                    let mut include = false;
-                    for (field_key, field_value) in &record.fields {
-                        if field_key.eq(&key) && predicate(&field_value, &value) {
-                            include = true;
-                            break;
-                        }
-                    }
-
-                    if include {
-                        result.insert(*record_id, record.clone());
-                    }
-                }
-                i = i + 1;
+                intrinsics::filter(records, &mut result, key, value, predicate);
+                i += 1;
             }
             Operation::Drop => {
                 // stack must contain values
@@ -177,7 +159,7 @@ fn execute_program(program: &mut Program) -> Result<Records, String> {
                 assert_stack_len(&stack, 1)?;
 
                 stack.pop();
-                i = i + 1;
+                i += 1;
             }
             Operation::Add => {
                 // stack must contain values
@@ -197,7 +179,7 @@ fn execute_program(program: &mut Program) -> Result<Records, String> {
                 };
 
                 stack.push(Value::Int(a + b));
-                i = i + 1;
+                i += 1;
             }
             Operation::Subtract => {
                 // stack must contain values
@@ -217,11 +199,11 @@ fn execute_program(program: &mut Program) -> Result<Records, String> {
                 };
 
                 stack.push(Value::Int(a - b));
-                i = i + 1;
+                i += 1;
             }
             Operation::It => {
                 stack.push(Value::Int(it));
-                i = i + 1;
+                i += 1;
             }
             Operation::Range { value, end } => {
                 if *value > 0 {
@@ -230,7 +212,7 @@ fn execute_program(program: &mut Program) -> Result<Records, String> {
                         value: value - 1,
                         end: *end,
                     };
-                    i = i + 1;
+                    i += 1;
                 } else {
                     i = *end;
                 }
@@ -244,41 +226,109 @@ fn execute_program(program: &mut Program) -> Result<Records, String> {
     Ok(result)
 }
 
-fn print_records(records: &Records) {
-    println!("┌────────────┬──────────────────────┐");
-    let mut row = 0;
-    for (_, record) in records {
-        for (key, value) in &record.fields {
+fn results_to_json(records: Arc<Mutex<Records>>, result: QueryResult) -> String {
+    let records = records.lock().unwrap();
+    let mut output = String::new();
+    output.push_str("{\n\"message\":\"OK\",\n\"data\": [\n");
+
+    for (row, id) in result.iter().enumerate() {
+        let record = records.get(id).unwrap();
+        output.push_str("{\n");
+
+        for (i, (key, value)) in record.fields.iter().enumerate() {
             match value {
                 Value::Id(val) => {
-                    println!("│ {0: <10} │ {1: >20} │", key, val);
+                    output.push_str(&format!("\"{}\":{}", key, val));
                 }
                 Value::Int(val) => {
-                    println!("│ {0: <10} │ {1: >20} │", key, val);
+                    output.push_str(&format!("\"{}\":{}", key, val));
                 }
                 Value::Float(val) => {
-                    println!("│ {0: <10} │ {1: >20} │", key, val);
+                    output.push_str(&format!("\"{}\":{}", key, val));
                 }
                 Value::String(val) => {
-                    println!("│ {0: <10} │ {1: >20} │", key, val);
+                    output.push_str(&format!("\"{}\":{}", key, val));
                 }
             }
+            if i != record.fields.len() - 1 {
+                output.push_str(",");
+            }
+            output.push_str("\n");
         }
-        if row == records.len() - 1 {
-            println!("└────────────┴──────────────────────┘");
+
+        if row == result.len() - 1 {
+            output.push_str("}]\n");
         } else {
-            println!("├────────────┼──────────────────────┤");
+            output.push_str("},\n");
         }
-        row = row + 1;
+    }
+    output.push_str("}\n");
+    output
+}
+
+fn report_err(err: String, mut stream: TcpStream) {
+    let json = format!("{{\"message\":\"{}\"}}", err);
+
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+        json.len(),
+        json
+    );
+
+    stream.write_all(response.as_bytes()).unwrap();
+    stream.flush().unwrap();
+
+    println!("\x1b[0;31mError : {}\x1b[0m", err);
+}
+
+fn handle_query(
+    records: Arc<Mutex<Records>>,
+    mut stream: TcpStream,
+) -> impl FnOnce() + Send + 'static {
+    move || {
+        let buf_reader = BufReader::new(&mut stream);
+        let program = match query::parse_tcp(buf_reader) {
+            Ok(val) => val,
+            Err(err) => {
+                report_err(err, stream);
+                return;
+            }
+        };
+
+        let result = match execute_program(Arc::clone(&records), program) {
+            Ok(val) => val,
+            Err(err) => {
+                report_err(err, stream);
+                return;
+            }
+        };
+
+        let json = results_to_json(Arc::clone(&records), result);
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+            json.len(),
+            json
+        );
+
+        stream.write_all(response.as_bytes()).unwrap();
+        stream.flush().unwrap();
     }
 }
 
 pub fn run() -> Result<(), String> {
-    let contents = fs::read_to_string("hello.real").unwrap();
-    let mut program = query::parse_program(contents)?;
-    let records = execute_program(&mut program)?;
+    // Database
+    let records: Records = HashMap::new();
+    let records = Arc::new(Mutex::new(records));
 
-    print_records(&records);
+    let listener = TcpListener::bind("127.0.0.1:1234").unwrap();
+    let pool = ThreadPool::new(4);
+
+    println!("Database is listening to http://localhost:1234");
+
+    for stream in listener.incoming() {
+        let stream = stream.unwrap();
+        pool.execute(handle_query(Arc::clone(&records), stream));
+    }
 
     Ok(())
 }
