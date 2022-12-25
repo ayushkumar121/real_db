@@ -1,4 +1,4 @@
-use crate::{Id, QueryResult, Record, Records, Value};
+use crate::{QueryResult, Record, RecordId, Records, Value};
 use std::collections::HashMap;
 
 type FilterPredicate = fn(&Value, &Value) -> bool;
@@ -17,15 +17,18 @@ pub fn match_predicate(predicate: Value) -> Option<FilterPredicate> {
     }
 }
 
-pub fn set(records: &mut Records, id: Id, key: String, value: Value) {
+pub fn set(records: &mut Records, record_id: &RecordId, key: String, value: Value) {
     let key = key.to_lowercase();
-    if let Some(record) = records.get_mut(&id) {
+    if let Some(record) = records.get_mut(&record_id.row) {
         record.fields.insert(key, value);
     } else {
         records.insert(
-            id,
+            record_id.row,
             Record {
-                fields: HashMap::from([(String::from("id"), Value::Id(id)), (key, value)]),
+                fields: HashMap::from([
+                    (String::from("id"), Value::Id(record_id.clone())),
+                    (key, value),
+                ]),
             },
         );
     }

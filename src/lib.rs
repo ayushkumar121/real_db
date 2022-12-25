@@ -20,18 +20,33 @@ pub struct Record {
     fields: HashMap<String, Value>,
 }
 
-pub type Id = u64;
+#[derive(Debug, PartialEq, Eq, PartialOrd, Clone)]
+pub struct RecordId {
+    table_name: String,
+    row: u64,
+}
 
 #[derive(Debug, PartialEq, PartialOrd, Clone)]
 pub enum Value {
-    Id(Id),
+    // Id is composed of a table name and row id
+    Id(RecordId),
     Int(i64),
     Float(f64),
     String(String),
+    // Array
+    // RecordLink(Id),
 }
 
-type Records = HashMap<Id, Record>;
-type QueryResult = Vec<Id>;
+type Records = HashMap<u64, Record>;
+type QueryResult = Vec<u64>;
+
+pub struct Database {
+    // Hashmap from table name to records
+    tables: HashMap<String, Records>,
+}
+pub type DatabaseRef = Arc<Mutex<Database>>;
+
+const DEFAULT_TABLE: &str = "0";
 
 fn assert_stack_len(stack: &Vec<Value>, n: usize) -> Result<(), String> {
     if stack.len() < n {
@@ -44,14 +59,12 @@ fn assert_stack_len(stack: &Vec<Value>, n: usize) -> Result<(), String> {
 }
 
 // Query Execution
-fn execute_program(
-    records: Arc<Mutex<Records>>,
-    mut program: Program,
-) -> Result<QueryResult, String> {
-    let records = &mut records.lock().unwrap();
+fn execute_program(database: DatabaseRef, mut program: Program) -> Result<QueryResult, String> {
+    let mut database = database.lock().unwrap();
+    let records = database.tables.get_mut(DEFAULT_TABLE).unwrap();
 
     let mut stack = Vec::new();
-    let mut result = Vec::new();
+    let mut result: QueryResult = Vec::new();
     let mut i = 0;
 
     let start = SystemTime::now();
@@ -85,12 +98,11 @@ fn execute_program(
                     _ => return Err("Key must be a string".to_owned()),
                 };
                 let record_id = match stack.pop().unwrap() {
-                    Value::Id(id) => id,
-                    Value::Int(num) => num as Id,
+                    Value::Id(record_id) => record_id,
                     val => return Err(format!("Record Id must be an id found {:#?}", val)),
                 };
 
-                intrinsics::set(records, record_id, key, value);
+                intrinsics::set(records, &record_id, key, value);
                 i += 1;
             }
             Operation::Insert => {
@@ -103,9 +115,13 @@ fn execute_program(
                     Value::String(str) => str,
                     _ => return Err("Key must be a string".to_owned()),
                 };
-                let record_id: Id = rng.read_u64();
+                let row: u64 = rng.read_u64();
+                let record_id = RecordId {
+                    table_name: DEFAULT_TABLE.to_lowercase(),
+                    row,
+                };
 
-                intrinsics::set(records, record_id, key, value);
+                intrinsics::set(records, &record_id, key, value);
 
                 // Pushing inserted Id on the stack
                 stack.push(Value::Id(record_id));
@@ -117,21 +133,20 @@ fn execute_program(
                 assert_stack_len(&stack, 1)?;
 
                 let record_id = match stack.pop().unwrap() {
-                    Value::Id(id) => id,
-                    Value::Int(num) => num as Id,
+                    Value::Id(record_id) => record_id,
                     _ => return Err("Record Id must be an id".to_owned()),
                 };
 
-                if records.get(&record_id).is_some() {
-                    result.push(record_id);
+                if records.get(&record_id.row).is_some() {
+                    result.push(record_id.row);
                 } else {
                     return Err("Record not found".to_owned());
                 }
                 i += 1;
             }
             Operation::SelectAll => {
-                for (record_id, _) in records.iter_mut() {
-                    result.push(*record_id);
+                for (row, _) in records.iter_mut() {
+                    result.push(*row);
                 }
                 i += 1;
             }
@@ -167,14 +182,12 @@ fn execute_program(
                 assert_stack_len(&stack, 2)?;
 
                 let b = match stack.pop().unwrap() {
-                    Value::Id(val) => val as i64,
-                    Value::Int(val) => val,
+                    Value::Int(num) => num,
                     _ => return Err("Add requires two int on stack".to_owned()),
                 };
 
                 let a = match stack.pop().unwrap() {
-                    Value::Id(val) => val as i64,
-                    Value::Int(val) => val,
+                    Value::Int(num) => num,
                     _ => return Err("Add requires two int on stack".to_owned()),
                 };
 
@@ -185,17 +198,14 @@ fn execute_program(
                 // stack must contain values
                 // a:Int b:Int
                 assert_stack_len(&stack, 2)?;
-
                 let b = match stack.pop().unwrap() {
-                    Value::Id(val) => val as i64,
-                    Value::Int(val) => val,
-                    _ => return Err("Add requires two int on stack".to_owned()),
+                    Value::Int(num) => num,
+                    _ => return Err("Sub requires two int on stack".to_owned()),
                 };
 
                 let a = match stack.pop().unwrap() {
-                    Value::Id(val) => val as i64,
-                    Value::Int(val) => val,
-                    _ => return Err("Add requires two int on stack".to_owned()),
+                    Value::Int(num) => num,
+                    _ => return Err("Sub requires two int on stack".to_owned()),
                 };
 
                 stack.push(Value::Int(a - b));
@@ -226,8 +236,10 @@ fn execute_program(
     Ok(result)
 }
 
-fn results_to_json(records: Arc<Mutex<Records>>, result: QueryResult) -> String {
-    let records = records.lock().unwrap();
+fn results_to_json(database: DatabaseRef, result: QueryResult) -> String {
+    let database = database.lock().unwrap();
+    let records = database.tables.get("0").unwrap();
+
     let mut output = String::new();
     output.push_str("{\n\"message\":\"OK\",\n\"data\": [\n");
 
@@ -237,8 +249,11 @@ fn results_to_json(records: Arc<Mutex<Records>>, result: QueryResult) -> String 
 
         for (i, (key, value)) in record.fields.iter().enumerate() {
             match value {
-                Value::Id(val) => {
-                    output.push_str(&format!("\"{}\":{}", key, val));
+                Value::Id(record_id) => {
+                    output.push_str(&format!(
+                        "\"{}\":\"{}:{}\"",
+                        key, record_id.table_name, record_id.row
+                    ));
                 }
                 Value::Int(val) => {
                     output.push_str(&format!("\"{}\":{}", key, val));
@@ -247,22 +262,26 @@ fn results_to_json(records: Arc<Mutex<Records>>, result: QueryResult) -> String 
                     output.push_str(&format!("\"{}\":{}", key, val));
                 }
                 Value::String(val) => {
-                    output.push_str(&format!("\"{}\":{}", key, val));
-                }
+                    output.push_str(&format!("\"{}\":\"{}\"", key, val));
+                } // Recurvivly print the document
+                  // Value::RecordLink(_) => {
+                  // let record = records.get(id).unwrap();
+                  // todo!()
+                  // }
             }
             if i != record.fields.len() - 1 {
-                output.push_str(",");
+                output.push(',');
             }
-            output.push_str("\n");
+            output.push('\n');
         }
 
         if row == result.len() - 1 {
-            output.push_str("}]\n");
+            output.push('}');
         } else {
             output.push_str("},\n");
         }
     }
-    output.push_str("}\n");
+    output.push_str("]\n}\n");
     output
 }
 
@@ -270,8 +289,9 @@ fn report_err(err: String, mut stream: TcpStream) {
     let json = format!("{{\"message\":\"{}\"}}", err);
 
     let response = format!(
-        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n{}\r\n\r\n{}",
         json.len(),
+        "Content-Type: application/json",
         json
     );
 
@@ -281,10 +301,7 @@ fn report_err(err: String, mut stream: TcpStream) {
     println!("\x1b[0;31mError : {}\x1b[0m", err);
 }
 
-fn handle_query(
-    records: Arc<Mutex<Records>>,
-    mut stream: TcpStream,
-) -> impl FnOnce() + Send + 'static {
+fn handle_query(database: DatabaseRef, mut stream: TcpStream) -> impl FnOnce() + Send + 'static {
     move || {
         let buf_reader = BufReader::new(&mut stream);
         let program = match query::parse_tcp(buf_reader) {
@@ -295,7 +312,7 @@ fn handle_query(
             }
         };
 
-        let result = match execute_program(Arc::clone(&records), program) {
+        let result = match execute_program(Arc::clone(&database), program) {
             Ok(val) => val,
             Err(err) => {
                 report_err(err, stream);
@@ -303,10 +320,11 @@ fn handle_query(
             }
         };
 
-        let json = results_to_json(Arc::clone(&records), result);
+        let json = results_to_json(Arc::clone(&database), result);
         let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n{}\r\n\r\n{}",
             json.len(),
+            "Content-Type: application/json",
             json
         );
 
@@ -317,17 +335,23 @@ fn handle_query(
 
 pub fn run() -> Result<(), String> {
     // Database
-    let records: Records = HashMap::new();
-    let records = Arc::new(Mutex::new(records));
+    let database = Database {
+        tables: HashMap::from([(DEFAULT_TABLE.to_owned(), HashMap::new())]),
+    };
+    let database = Arc::new(Mutex::new(database));
 
-    let listener = TcpListener::bind("127.0.0.1:1234").unwrap();
+    let listener = match TcpListener::bind("127.0.0.1:1234") {
+        Ok(val) => val,
+        Err(err) => return Err(format!("{}", err)),
+    };
+
     let pool = ThreadPool::new(4);
 
     println!("Database is listening to http://localhost:1234");
 
     for stream in listener.incoming() {
         let stream = stream.unwrap();
-        pool.execute(handle_query(Arc::clone(&records), stream));
+        pool.execute(handle_query(Arc::clone(&database), stream));
     }
 
     Ok(())

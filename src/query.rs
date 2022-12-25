@@ -6,7 +6,7 @@ use std::{
 
 use random::Source;
 
-use crate::{Id, Value};
+use crate::{RecordId, Value};
 
 #[derive(Debug)]
 pub struct Token {
@@ -26,7 +26,7 @@ pub enum TokenKind {
     SelectAll,
     Filter,
     Drop,
-    Auto,
+    Id,
     Int,
     Float,
     String,
@@ -42,7 +42,6 @@ fn match_token_kind(word: &str) -> TokenKind {
     match word.as_str() {
         "+" => TokenKind::Plus,
         "-" => TokenKind::Minus,
-        "_" => TokenKind::Auto,
         "set" => TokenKind::Set,
         "insert" => TokenKind::Insert,
         "select" => TokenKind::Select,
@@ -64,6 +63,11 @@ fn match_token_kind(word: &str) -> TokenKind {
 
             if word.parse::<f64>().is_ok() {
                 return TokenKind::Float;
+            }
+
+            // :table_name:1234
+            if word.starts_with(':') {
+                return TokenKind::Id;
             }
 
             TokenKind::Word
@@ -91,10 +95,12 @@ fn tokenize(contents: String) -> Result<Vec<Token>, String> {
 
     let mut tokens = Vec::new();
     let mut word = String::new();
-    let mut is_str = false;
-    let mut is_comment = false;
+
     let mut line = 1;
     let mut col = 1;
+
+    let mut is_str = false;
+    let mut is_comment = false;
 
     for ch in contents.chars() {
         match ch {
@@ -165,6 +171,36 @@ pub fn parse(contents: String) -> Result<Program, String> {
         let token = &tokens[i];
 
         match token.kind {
+            TokenKind::Id => {
+                let parts: Vec<_> = token.word.split(':').collect();
+
+                if parts.len() != 3 {
+                    return Err(format!(
+                        "Unexpected id format at line {}:{}. It should be like :table_name:1234",
+                        token.line, token.col
+                    ));
+                }
+
+                let table_name = parts[1];
+                let r = parts[2];
+                let row = match r {
+                    "_" => rng.read_u64(),
+                    _ => {
+                        if let Ok(n) = r.parse::<u64>() {
+                            n
+                        } else {
+                            return Err(format!(
+                        "Unexpected id format at line {}:{}. It should be like :table_name:1234",
+                        token.line, token.col));
+                        }
+                    }
+                };
+
+                program.push(Operation::Push(Value::Id(RecordId {
+                    table_name: table_name.to_owned(),
+                    row,
+                })));
+            }
             TokenKind::String => {
                 let mut w = token.word.strip_prefix('\"').unwrap();
                 w = w.strip_suffix('\"').unwrap();
@@ -176,10 +212,6 @@ pub fn parse(contents: String) -> Result<Program, String> {
             }
             TokenKind::Float => {
                 program.push(Operation::Push(Value::Float(token.word.parse().unwrap())))
-            }
-            TokenKind::Auto => {
-                let n: Id = rng.read_u64();
-                program.push(Operation::Push(Value::Id(n)));
             }
             TokenKind::Set => program.push(Operation::Set),
             TokenKind::Select => program.push(Operation::Select),
@@ -233,7 +265,9 @@ pub fn parse(contents: String) -> Result<Program, String> {
             TokenKind::Word => {
                 return Err(format!(
                     "Unexpected word `{}` line {}:{}",
-                    token.word, token.line, token.col
+                    token.word.escape_default(),
+                    token.line,
+                    token.col
                 ));
             }
         }
@@ -263,10 +297,11 @@ pub fn parse_tcp(mut buf_reader: BufReader<&mut TcpStream>) -> Result<Program, S
     // We expect a new line to be present at
     // end of the body
 
+    // TODO: Parse multiline text
     let mut body = String::new();
     buf_reader.take(512).read_line(&mut body).unwrap();
 
-    println!("Executing query: {}", body.trim());
+    println!("Executing query: \x1b[1;95m{}\x1b[0m", body.trim());
 
     parse(body)
 }
