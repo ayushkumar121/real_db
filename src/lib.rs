@@ -154,7 +154,7 @@ fn execute_program(database: DatabaseRef, mut program: Program) -> Result<QueryR
                     _ => return Err(format!("Table `{}` not found", record_id.table_name)),
                 };
 
-                for (row, _) in records {
+                for row in records.keys() {
                     result.push(RecordId {
                         table_name: record_id.table_name.clone(),
                         row: *row,

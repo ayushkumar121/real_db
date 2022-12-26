@@ -52,11 +52,8 @@ pub fn filter(
         }
 
         if include {
-            match record.fields.get("id").unwrap() {
-                Value::Id(record_id) => {
-                    result.push(record_id.clone());
-                }
-                _ => {}
+            if let Value::Id(record_id) = record.fields.get("id").unwrap() {
+                result.push(record_id.clone());
             };
         }
     }
