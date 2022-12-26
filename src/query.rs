@@ -21,7 +21,6 @@ pub enum TokenKind {
     Plus,
     Minus,
     Set,
-    Insert,
     Select,
     SelectAll,
     Filter,
@@ -43,7 +42,6 @@ fn match_token_kind(word: &str) -> TokenKind {
         "+" => TokenKind::Plus,
         "-" => TokenKind::Minus,
         "set" => TokenKind::Set,
-        "insert" => TokenKind::Insert,
         "select" => TokenKind::Select,
         "select_all" => TokenKind::SelectAll,
         "filter" => TokenKind::Filter,
@@ -65,8 +63,8 @@ fn match_token_kind(word: &str) -> TokenKind {
                 return TokenKind::Float;
             }
 
-            // :table_name:1234
-            if word.starts_with(':') {
+            // @table_name:1234
+            if word.starts_with('@') && word.split(':').count() == 2 {
                 return TokenKind::Id;
             }
 
@@ -142,7 +140,6 @@ pub enum Operation {
     Select,
     SelectAll,
     Filter,
-    Insert,
     Drop,
     Add,
     Subtract,
@@ -174,15 +171,15 @@ pub fn parse(contents: String) -> Result<Program, String> {
             TokenKind::Id => {
                 let parts: Vec<_> = token.word.split(':').collect();
 
-                if parts.len() != 3 {
+                if parts.len() != 2 {
                     return Err(format!(
-                        "Unexpected id format at line {}:{}. It should be like :table_name:1234",
+                        "Unexpected id format at line {}:{}. It should be like @table_name:1234",
                         token.line, token.col
                     ));
                 }
 
-                let table_name = parts[1];
-                let r = parts[2];
+                let table_name = parts[0];
+                let r = parts[1];
                 let row = match r {
                     "_" => rng.read_u64(),
                     _ => {
@@ -217,7 +214,6 @@ pub fn parse(contents: String) -> Result<Program, String> {
             TokenKind::Select => program.push(Operation::Select),
             TokenKind::SelectAll => program.push(Operation::SelectAll),
             TokenKind::Filter => program.push(Operation::Filter),
-            TokenKind::Insert => program.push(Operation::Insert),
             TokenKind::Drop => program.push(Operation::Drop),
             TokenKind::Plus => program.push(Operation::Add),
             TokenKind::Minus => program.push(Operation::Subtract),

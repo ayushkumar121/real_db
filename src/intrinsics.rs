@@ -42,7 +42,7 @@ pub fn filter(
     value: Value,
     predicate: FilterPredicate,
 ) {
-    for (record_id, record) in records.iter_mut() {
+    for (_, record) in records.iter() {
         let mut include = false;
         for (field_key, field_value) in &record.fields {
             if field_key.eq(&key) && predicate(field_value, &value) {
@@ -52,7 +52,12 @@ pub fn filter(
         }
 
         if include {
-            result.push(*record_id);
+            match record.fields.get("id").unwrap() {
+                Value::Id(record_id) => {
+                    result.push(record_id.clone());
+                }
+                _ => {}
+            };
         }
     }
 }

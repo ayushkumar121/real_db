@@ -1,9 +1,7 @@
 use query::*;
-use random::Source;
 use std::io::Write;
 use std::net::{TcpListener, TcpStream};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::{collections::HashMap, io::BufReader};
 
 use crate::server::ThreadPool;
@@ -38,7 +36,7 @@ pub enum Value {
 }
 
 type Records = HashMap<u64, Record>;
-type QueryResult = Vec<u64>;
+type QueryResult = Vec<RecordId>;
 
 pub struct Database {
     // Hashmap from table name to records
@@ -58,18 +56,18 @@ fn assert_stack_len(stack: &Vec<Value>, n: usize) -> Result<(), String> {
     Ok(())
 }
 
+fn get_table(table_name: String, database: &mut Database) -> Option<&mut Records> {
+    database.tables.get_mut(&table_name)
+}
+
 // Query Execution
 fn execute_program(database: DatabaseRef, mut program: Program) -> Result<QueryResult, String> {
-    let mut database = database.lock().unwrap();
-    let records = database.tables.get_mut(DEFAULT_TABLE).unwrap();
+    let database = &mut database.lock().unwrap();
+    // let records = database.tables.get_mut(DEFAULT_TABLE).unwrap();
 
     let mut stack = Vec::new();
     let mut result: QueryResult = Vec::new();
     let mut i = 0;
-
-    let start = SystemTime::now();
-    let since_the_epoch = start.duration_since(UNIX_EPOCH).unwrap();
-    let mut rng = random::default(since_the_epoch.as_secs());
 
     let mut it = 0;
 
@@ -102,29 +100,21 @@ fn execute_program(database: DatabaseRef, mut program: Program) -> Result<QueryR
                     val => return Err(format!("Record Id must be an id found {:#?}", val)),
                 };
 
-                intrinsics::set(records, &record_id, key, value);
-                i += 1;
-            }
-            Operation::Insert => {
-                // stack must contain values
-                //  Key, Value
-                assert_stack_len(&stack, 2)?;
-
-                let value = stack.pop().unwrap();
-                let key = match stack.pop().unwrap() {
-                    Value::String(str) => str,
-                    _ => return Err("Key must be a string".to_owned()),
-                };
-                let row: u64 = rng.read_u64();
-                let record_id = RecordId {
-                    table_name: DEFAULT_TABLE.to_lowercase(),
-                    row,
+                match get_table(record_id.table_name.clone(), database) {
+                    Some(records) => {
+                        intrinsics::set(records, &record_id, key, value);
+                    }
+                    None => {
+                        let mut records = HashMap::new();
+                        intrinsics::set(&mut records, &record_id, key, value);
+                        database
+                            .tables
+                            .insert(record_id.table_name.clone(), records);
+                    }
                 };
 
-                intrinsics::set(records, &record_id, key, value);
-
-                // Pushing inserted Id on the stack
                 stack.push(Value::Id(record_id));
+
                 i += 1;
             }
             Operation::Select => {
@@ -137,23 +127,45 @@ fn execute_program(database: DatabaseRef, mut program: Program) -> Result<QueryR
                     _ => return Err("Record Id must be an id".to_owned()),
                 };
 
+                let records = match get_table(record_id.table_name.clone(), database) {
+                    Some(val) => val,
+                    _ => return Err(format!("Table `{}` not found", record_id.table_name)),
+                };
+
                 if records.get(&record_id.row).is_some() {
-                    result.push(record_id.row);
+                    result.push(record_id);
                 } else {
                     return Err("Record not found".to_owned());
                 }
                 i += 1;
             }
             Operation::SelectAll => {
-                for (row, _) in records.iter_mut() {
-                    result.push(*row);
+                // stack must contain values
+                // Id
+                assert_stack_len(&stack, 1)?;
+
+                let record_id = match stack.pop().unwrap() {
+                    Value::Id(record_id) => record_id,
+                    _ => return Err("Record Id must be an id".to_owned()),
+                };
+
+                let records = match get_table(record_id.table_name.clone(), database) {
+                    Some(val) => val,
+                    _ => return Err(format!("Table `{}` not found", record_id.table_name)),
+                };
+
+                for (row, _) in records {
+                    result.push(RecordId {
+                        table_name: record_id.table_name.clone(),
+                        row: *row,
+                    });
                 }
                 i += 1;
             }
             Operation::Filter => {
                 // stack must contain values
-                // Key, Value, Predicate
-                assert_stack_len(&stack, 3)?;
+                // Id, Key, Value, Predicate
+                assert_stack_len(&stack, 4)?;
 
                 let predicate = match intrinsics::match_predicate(stack.pop().unwrap()) {
                     Some(predicate) => predicate,
@@ -161,8 +173,18 @@ fn execute_program(database: DatabaseRef, mut program: Program) -> Result<QueryR
                 };
                 let value = stack.pop().unwrap();
                 let key = match stack.pop().unwrap() {
-                    Value::String(str) => str,
+                    Value::String(str) => str.to_lowercase(),
                     _ => return Err("Key must be a string".to_owned()),
+                };
+
+                let record_id = match stack.pop().unwrap() {
+                    Value::Id(record_id) => record_id,
+                    _ => return Err("Record Id must be an id".to_owned()),
+                };
+
+                let records = match get_table(record_id.table_name.clone(), database) {
+                    Some(val) => val,
+                    _ => return Err(format!("Table `{}` not found", record_id.table_name)),
                 };
 
                 intrinsics::filter(records, &mut result, key, value, predicate);
@@ -238,13 +260,14 @@ fn execute_program(database: DatabaseRef, mut program: Program) -> Result<QueryR
 
 fn results_to_json(database: DatabaseRef, result: QueryResult) -> String {
     let database = database.lock().unwrap();
-    let records = database.tables.get("0").unwrap();
 
     let mut output = String::new();
     output.push_str("{\n\"message\":\"OK\",\n\"data\": [\n");
 
     for (row, id) in result.iter().enumerate() {
-        let record = records.get(id).unwrap();
+        let records = database.tables.get(&id.table_name).unwrap();
+        let record = records.get(&id.row).unwrap();
+
         output.push_str("{\n");
 
         for (i, (key, value)) in record.fields.iter().enumerate() {
