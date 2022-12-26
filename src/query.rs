@@ -34,6 +34,7 @@ pub enum TokenKind {
     It,
     Do,
     End,
+    SemiColon,
 }
 
 fn match_token_kind(word: &str) -> TokenKind {
@@ -50,6 +51,7 @@ fn match_token_kind(word: &str) -> TokenKind {
         "it" => TokenKind::It,
         "do" => TokenKind::Do,
         "end" => TokenKind::End,
+        ";" => TokenKind::SemiColon,
         _ => {
             if word.starts_with('\"') && word.ends_with('\"') {
                 return TokenKind::String;
@@ -258,6 +260,7 @@ pub fn parse(contents: String) -> Result<Program, String> {
                     ));
                 }
             }
+            TokenKind::SemiColon => {}
             TokenKind::Word => {
                 return Err(format!(
                     "Unexpected word `{}` line {}:{}",
@@ -294,10 +297,15 @@ pub fn parse_tcp(mut buf_reader: BufReader<&mut TcpStream>) -> Result<Program, S
     // end of the body
 
     // TODO: Parse multiline text
-    let mut body = String::new();
-    buf_reader.take(512).read_line(&mut body).unwrap();
+    let mut body = Vec::new();
+    buf_reader
+        .take(512)
+        .read_until(';' as u8, &mut body)
+        .unwrap();
 
-    println!("Executing query: \x1b[1;95m{}\x1b[0m", body.trim());
+    let body_str = String::from_utf8_lossy(&body).to_string();
 
-    parse(body)
+    println!("Executing query: \x1b[1;95m{}\x1b[0m", body_str.trim());
+
+    parse(body_str)
 }

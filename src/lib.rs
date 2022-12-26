@@ -100,18 +100,15 @@ fn execute_program(database: DatabaseRef, mut program: Program) -> Result<QueryR
                     val => return Err(format!("Record Id must be an id found {:#?}", val)),
                 };
 
-                match get_table(record_id.table_name.clone(), database) {
-                    Some(records) => {
-                        intrinsics::set(records, &record_id, key, value);
-                    }
-                    None => {
-                        let mut records = HashMap::new();
-                        intrinsics::set(&mut records, &record_id, key, value);
-                        database
-                            .tables
-                            .insert(record_id.table_name.clone(), records);
-                    }
-                };
+                if let Some(records) = get_table(record_id.table_name.clone(), database) {
+                    intrinsics::set(records, &record_id, key, value);
+                } else {
+                    let mut records = HashMap::new();
+                    intrinsics::set(&mut records, &record_id, key, value);
+                    database
+                        .tables
+                        .insert(record_id.table_name.clone(), records);
+                }
 
                 stack.push(Value::Id(record_id));
 
@@ -173,7 +170,7 @@ fn execute_program(database: DatabaseRef, mut program: Program) -> Result<QueryR
                 };
                 let value = stack.pop().unwrap();
                 let key = match stack.pop().unwrap() {
-                    Value::String(str) => str.to_lowercase(),
+                    Value::String(str) => str,
                     _ => return Err("Key must be a string".to_owned()),
                 };
 

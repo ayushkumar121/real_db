@@ -42,6 +42,7 @@ pub fn filter(
     value: Value,
     predicate: FilterPredicate,
 ) {
+    let key = key.to_lowercase();
     for (_, record) in records.iter() {
         let mut include = false;
         for (field_key, field_value) in &record.fields {
