@@ -293,10 +293,9 @@ pub fn parse_tcp(mut buf_reader: BufReader<&mut TcpStream>) -> Result<Program, S
     }
 
     // Reading body
-    // We expect a new line to be present at
+    // We expect a semicolon to be present at
     // end of the body
 
-    // TODO: Parse multiline text
     let mut body = Vec::new();
     buf_reader
         .take(512)
